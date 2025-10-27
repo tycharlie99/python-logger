@@ -1,17 +1,18 @@
+from __future__ import annotations
 import logging
 from logging.handlers import RotatingFileHandler, QueueHandler, QueueListener
 import multiprocessing
 import os
-from typing import Optional
+from typing import Any
 import time
 import random
 
 
 class LoggerSingleton:
-    _instance: Optional["LoggerSingleton"] = None
+    _instance: LoggerSingleton | None = None
     _is_initialized: bool = False
-    _log_queue: Optional[multiprocessing.Queue] = None
-    _listener: Optional[QueueListener] = None
+    _log_queue: multiprocessing.Queue[Any] | None = None
+    _listener: QueueListener | None = None
 
     _log_file: str
     _level: int
@@ -21,12 +22,12 @@ class LoggerSingleton:
 
     def __new__(
         cls,
-        log_queue: multiprocessing.Queue,
-        log_file="app.log",
-        level=logging.DEBUG,
-        max_bytes=10 * 1024 * 1024,
-        backup_count=5,
-    ):
+        log_queue: multiprocessing.Queue[Any],
+        log_file: str = "app.log",
+        level: int = logging.DEBUG,
+        max_bytes: int = 10 * 1024 * 1024,
+        backup_count: int = 5,
+    ) -> LoggerSingleton:
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             cls._instance._log_file = log_file
@@ -38,12 +39,12 @@ class LoggerSingleton:
 
     @staticmethod
     def _setup_listener(
-        queue_ref: multiprocessing.Queue,
+        queue_ref: multiprocessing.Queue[Any],
         log_file: str,
         level: int,
         max_bytes: int,
         backup_count: int,
-    ):
+    ) -> QueueListener:
         formatter = logging.Formatter(
             "%(asctime)s - %(process)d - %(thread)d - %(levelname)s - %(module)s - %(message)s"
         )
@@ -69,7 +70,7 @@ class LoggerSingleton:
         listener.start()
         return listener
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args: object, **kwargs: object) -> None:
         if LoggerSingleton._is_initialized:
             return
 
@@ -81,6 +82,8 @@ class LoggerSingleton:
             self.logger.removeHandler(h)
 
         # Add QueueHandler
+        if self._log_queue is None:
+            raise ValueError("log_queue must be provided for LoggerSingleton initialization.")
         self.logger.addHandler(QueueHandler(self._log_queue))
 
         # Start listener in main process
@@ -100,7 +103,7 @@ class LoggerSingleton:
         self.logger.info("LoggerSingleton initialized (cross-platform process-safe).")
 
     @staticmethod
-    def setup_worker_logger(log_queue: multiprocessing.Queue):
+    def setup_worker_logger(log_queue: multiprocessing.Queue[Any]) -> None:
         """
         Worker process call, set QueueHandler
         """
@@ -111,29 +114,29 @@ class LoggerSingleton:
         root.addHandler(QueueHandler(log_queue))
 
     @staticmethod
-    def shutdown():
+    def shutdown() -> None:
         if LoggerSingleton._listener:
             LoggerSingleton._listener.stop()
             LoggerSingleton._listener = None
 
     # --- Wrapper methods ---
-    def debug(self, msg, *args, **kwargs):
+    def debug(self, msg: str, *args: object, **kwargs: Any) -> None:  # noqa: ANN401
         self.logger.debug(msg, *args, **kwargs)
 
-    def info(self, msg, *args, **kwargs):
+    def info(self, msg: str, *args: object, **kwargs: Any) -> None:  # noqa: ANN401
         self.logger.info(msg, *args, **kwargs)
 
-    def warning(self, msg, *args, **kwargs):
+    def warning(self, msg: str, *args: object, **kwargs: Any) -> None:  # noqa: ANN401
         self.logger.warning(msg, *args, **kwargs)
 
-    def error(self, msg, *args, **kwargs):
+    def error(self, msg: str, *args: object, **kwargs: Any) -> None:  # noqa: ANN401
         self.logger.error(msg, *args, **kwargs)
 
-    def critical(self, msg, *args, **kwargs):
+    def critical(self, msg: str, *args: object, **kwargs: Any) -> None:  # noqa: ANN401
         self.logger.critical(msg, *args, **kwargs)
 
 
-def worker_task(name, log_queue):
+def worker_task(name: str, log_queue: multiprocessing.Queue[Any]) -> None:
     LoggerSingleton.setup_worker_logger(log_queue)
     logger = logging.getLogger()
     logger.info(f"Worker {name} start")
@@ -156,10 +159,7 @@ if __name__ == "__main__":
     logger.info("Main process start")
 
     # Start multiple workers
-    procs = [
-        multiprocessing.Process(target=worker_task, args=(i, log_queue))
-        for i in range(3)
-    ]
+    procs = [multiprocessing.Process(target=worker_task, args=(i, log_queue)) for i in range(3)]
     for p in procs:
         p.start()
     for p in procs:

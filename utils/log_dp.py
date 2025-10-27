@@ -10,6 +10,7 @@ import struct  # Used for handling packet length
 import os
 import multiprocessing
 from multiprocessing import Process, Pool, current_process
+from typing import cast
 
 # ===================================================================
 # Configuration Parameters (Merged from both)
@@ -18,17 +19,19 @@ SERVER_HOST = "127.0.0.1"
 SERVER_PORT = logging.handlers.DEFAULT_TCP_LOGGING_PORT  # Default port 9020
 LOG_FILE_NAME = "centralized_socket_log.log"
 NUM_WORKERS = 4  # Number of worker processes (Pool size)
-NUM_TASKS = 10   # Number of total tasks to be processed
+NUM_TASKS = 10  # Number of total tasks to be processed
 
 # ===================================================================
 # 1. Singleton Logger Server Core
 # ===================================================================
 
-_singleton_logger = None
+_singleton_logger: logging.Logger | None = None
 _singleton_lock = threading.Lock()
 
 
-def get_singleton_logger(name="CentralSocketLogger", log_file=LOG_FILE_NAME):
+def get_singleton_logger(
+    name: str = "CentralSocketLogger", log_file: str = LOG_FILE_NAME
+) -> logging.Logger:
     """
     Get or create Singleton Logger instance (called only in the Server Process).
     Configures FileHandler and StreamHandler for central logging.
@@ -48,9 +51,7 @@ def get_singleton_logger(name="CentralSocketLogger", log_file=LOG_FILE_NAME):
 
             # 2. FileHandler: Write all aggregated logs to a file
             # Use mode="w" to overwrite the log file on each run
-            file_handler = logging.FileHandler(
-                log_file, mode="w", encoding="utf-8"
-            )
+            file_handler = logging.FileHandler(log_file, mode="w", encoding="utf-8")
             file_handler.setFormatter(formatter)
             _singleton_logger.addHandler(file_handler)
 
@@ -75,7 +76,7 @@ def get_singleton_logger(name="CentralSocketLogger", log_file=LOG_FILE_NAME):
 class LogRecordHandler(socketserver.StreamRequestHandler):
     """Handles a single TCP connection, receiving serialized LogRecord objects."""
 
-    def handle(self):
+    def handle(self) -> None:
         # Retrieve the central logger instance within the server's thread
         target_logger = get_singleton_logger()
 
@@ -105,7 +106,7 @@ class LogRecordHandler(socketserver.StreamRequestHandler):
             except (EOFError, ConnectionResetError):
                 # Client disconnected gracefully or was reset
                 break
-            except Exception as e:
+            except Exception as _e:
                 # Handle other unexpected errors
                 # print(f"Error during log handling: {e}") # Uncomment for debugging
                 break
@@ -117,31 +118,34 @@ class LogRecordReceiver(socketserver.ThreadingTCPServer):
     # Allow the socket to be reused immediately after closure
     allow_reuse_address = True
 
-    def __init__(self, host=SERVER_HOST, port=SERVER_PORT):
+    def __init__(self, host: str = SERVER_HOST, port: int = SERVER_PORT) -> None:
         super().__init__((host, port), LogRecordHandler)
         self.abort = 0
         self.timeout = 1
 
-    def serve_until_stopped(self):
+    def serve_until_stopped(self) -> None:
         """Run in a loop until externally terminated."""
         print(f"[SERVER PROCESS] Log Receiver started on {self.server_address}")
         while not self.abort:
             # Handle one request, blocking until connection
             self.handle_request()
 
-    def stop(self):
+    def stop(self) -> None:
         """Gracefully shut down the server by sending a dummy connection."""
         self.abort = 1
         # Send dummy connection to interrupt blocking handle_request()
         try:
-            with socket.create_connection(self.server_address, timeout=0.5):
-                pass
-        except:
+            if self.server_address:
+                with socket.create_connection(
+                    cast(tuple[str, int], self.server_address), timeout=0.5
+                ):
+                    pass
+        except Exception:
             pass
         self.server_close()
 
 
-def run_log_server():
+def run_log_server() -> None:
     """Target function to run Logger Server in a separate process."""
     try:
         # Initialize the Singleton Logger immediately within the server process
@@ -160,7 +164,7 @@ def run_log_server():
 # ===================================================================
 
 
-def setup_worker_logger(worker_id: int):
+def setup_worker_logger(worker_id: int) -> logging.Logger:
     """
     Configure Logger for each worker, using SocketHandler to send logs
     to the Central Log Server.
@@ -180,7 +184,7 @@ def setup_worker_logger(worker_id: int):
     return logger
 
 
-def worker_task(worker_id: int):
+def worker_task(worker_id: int) -> str:
     """Simulates a worker task execution and records various log levels."""
     logger = setup_worker_logger(worker_id)
     process_name = current_process().name
@@ -256,12 +260,12 @@ if __name__ == "__main__":
     # --- Final check and print file content ---
     if os.path.exists(LOG_FILE_NAME):
         print(f"\n✅ Logs successfully aggregated and written to file: {LOG_FILE_NAME}")
-        
+
         # Print first few lines for confirmation
         print("\n--- File Content Preview (First 5 lines) ---")
         try:
             with open(LOG_FILE_NAME, "r", encoding="utf-8") as f:
-                for i in range(5):
+                for _ in range(5):
                     line = f.readline().strip()
                     if line:
                         print(line)

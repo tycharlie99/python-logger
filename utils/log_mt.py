@@ -1,8 +1,9 @@
-
+from __future__ import annotations
 import logging
 from logging.handlers import RotatingFileHandler
 import os
-from typing import Optional
+from typing import Any
+
 
 class LoggerSingleton:
     """
@@ -10,7 +11,8 @@ class LoggerSingleton:
     module, ensuring only one logger instance exists throughout the application
     with a consistent configuration.
     """
-    _instance: Optional['LoggerSingleton'] = None
+
+    _instance: LoggerSingleton | None = None
     _is_initialized: bool = False
 
     # Declare instance attributes with type hints. This resolves the static analysis error
@@ -21,7 +23,13 @@ class LoggerSingleton:
     _backup_count: int
     logger: logging.Logger
 
-    def __new__(cls, log_file='app.log', level=logging.DEBUG, max_bytes=10485760, backup_count=5):
+    def __new__(
+        cls,
+        log_file: str = "app.log",
+        level: int = logging.DEBUG,
+        max_bytes: int = 10485760,
+        backup_count: int = 5,
+    ) -> LoggerSingleton:
         """
         Implements the Singleton pattern. This method controls instance creation.
         If an instance already exists, it returns the existing one.
@@ -36,7 +44,7 @@ class LoggerSingleton:
             cls._instance._backup_count = backup_count
         return cls._instance
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args: object, **kwargs: object) -> None:
         """
         Initializes the logger configuration only once.
         This signature is updated to accept *args and **kwargs to prevent the TypeError,
@@ -53,9 +61,7 @@ class LoggerSingleton:
         # Ensure handlers are not duplicated if the class is accessed multiple times
         if not self.logger.handlers:
             # 2. Define a standard formatter
-            formatter = logging.Formatter(
-                '%(asctime)s - %(levelname)s - %(module)s - %(message)s'
-            )
+            formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(module)s - %(message)s")
 
             # --- Console Handler (StreamHandler) ---
             # Logs messages to the standard output (console)
@@ -74,9 +80,9 @@ class LoggerSingleton:
 
                 file_handler = RotatingFileHandler(
                     filename=self._log_file,
-                    maxBytes=self._max_bytes, # 10MB
-                    backupCount=self._backup_count, # Keep 5 backup files
-                    encoding='utf-8'
+                    maxBytes=self._max_bytes,  # 10MB
+                    backupCount=self._backup_count,  # Keep 5 backup files
+                    encoding="utf-8",
                 )
                 file_handler.setLevel(self._level)
                 file_handler.setFormatter(formatter)
@@ -85,45 +91,42 @@ class LoggerSingleton:
                 # Fallback to console logging if file setup fails
                 self.logger.error(f"Failed to set up file logging: {e}")
 
-
         LoggerSingleton._is_initialized = True
         self.logger.info("LoggerSingleton initialized successfully.")
 
     # --- Wrapper methods for convenience ---
 
-    def debug(self, msg, *args, **kwargs):
-        """Log 'msg % args' with severity 'DEBUG'."""
+    def debug(self, msg: str, *args: object, **kwargs: Any) -> None:  # noqa: ANN401
         self.logger.debug(msg, *args, **kwargs)
 
-    def info(self, msg, *args, **kwargs):
-        """Log 'msg % args' with severity 'INFO'."""
+    def info(self, msg: str, *args: object, **kwargs: Any) -> None:  # noqa: ANN401
         self.logger.info(msg, *args, **kwargs)
 
-    def warning(self, msg, *args, **kwargs):
-        """Log 'msg % args' with severity 'WARNING'."""
+    def warning(self, msg: str, *args: object, **kwargs: Any) -> None:  # noqa: ANN401
         self.logger.warning(msg, *args, **kwargs)
 
-    def error(self, msg, *args, **kwargs):
-        """Log 'msg % args' with severity 'ERROR'."""
+    def error(self, msg: str, *args: object, **kwargs: Any) -> None:  # noqa: ANN401
         self.logger.error(msg, *args, **kwargs)
 
-    def critical(self, msg, *args, **kwargs):
-        """Log 'msg % args' with severity 'CRITICAL'."""
+    def critical(self, msg: str, *args: object, **kwargs: Any) -> None:  # noqa: ANN401
         self.logger.critical(msg, *args, **kwargs)
+
 
 # --- Example Usage ---
 
-def module_a_function():
+
+def module_a_function() -> None:
     """Function demonstrating logging usage in Module A."""
     logger_a = LoggerSingleton()
     logger_a.info("Module A: Starting processing.")
     logger_a.debug("Module A: This is a detailed debug message.")
     try:
-        result = 10 / 0
+        _result = 10 / 0
     except ZeroDivisionError:
         logger_a.error("Module A: An arithmetic error occurred.", exc_info=True)
 
-def module_b_function():
+
+def module_b_function() -> None:
     """Function demonstrating logging usage in Module B."""
     logger_b = LoggerSingleton()
     logger_b.warning("Module B: A non-critical event happened.")
@@ -133,7 +136,7 @@ def module_b_function():
 if __name__ == "__main__":
     # The first call to LoggerSingleton() creates and configures the instance.
     print("--- Initializing LoggerSingleton (First Call) ---")
-    log_file_path = 'my_application.log'
+    log_file_path = "my_application.log"
     logger1 = LoggerSingleton(log_file=log_file_path, level=logging.DEBUG)
 
     # Subsequent calls return the exact same instance, avoiding re-configuration.
@@ -158,4 +161,3 @@ if __name__ == "__main__":
     # Check the log file location
     print(f"\nLog messages saved to: {os.path.abspath(log_file_path)}")
     print("Check the file contents to see all messages recorded.")
-
