@@ -12,25 +12,69 @@ import pickle  # Used for serializing and deserializing LogRecord
 import struct  # Used for handling packet length
 from typing import Any, Literal, cast
 from socketserver import ThreadingTCPServer, StreamRequestHandler
+import yaml
 
+APP_ENV = os.getenv("APP_ENV", "DEV").upper()
 
 LogMode = Literal["SINGLE_THREAD", "MULTI_PROCESS", "DISTRIBUTED"]
+NOTICE_LEVEL_NUM = 25
+NOTICE_LEVEL_NAME = "NOTICE"
+
+logging.addLevelName(NOTICE_LEVEL_NUM, NOTICE_LEVEL_NAME)
+
+
+def notice(self: logging.Logger, message: str, *args: object, **kws: Any) -> None:
+    if self.isEnabledFor(NOTICE_LEVEL_NUM):
+        self._log(NOTICE_LEVEL_NUM, message, args, **kws)
+
+
+logging.Logger.notice = notice  # type: ignore
+
+
+def get_module_logger(name: str) -> logging.Logger:
+    """Helper function to get a module-specific logger."""
+    return logging.getLogger(name)
 
 
 class LogConfig:
     """Application logging configuration for centralized parameter management."""
 
-    LOG_MODE: LogMode = "SINGLE_THREAD"  # Default to single-thread mode
-    LOG_FILE: str = "app.log"
-    LOG_LEVEL: int = logging.DEBUG
-    MAX_BYTES: int = 10 * 1024 * 1024  # 10MB
-    BACKUP_COUNT: int = 5
-    FORMATTER: logging.Formatter = logging.Formatter(
-        "%(asctime)s - [%(levelname)s] - %(module)s - %(message)s"
-    )
-    # Configuration specific to distributed mode
-    SERVER_HOST: str = "127.0.0.1"
-    SERVER_PORT: int = logging.handlers.DEFAULT_TCP_LOGGING_PORT
+    def __init__(self) -> None:
+        config_path = os.path.join(
+            os.path.dirname(__file__), f"./config/logger_{APP_ENV.lower()}.yaml"
+        )
+        with open(config_path, "r") as f:
+            config_data = yaml.safe_load(f)
+            self.logger_cfg = config_data
+
+    def get_logger_mode(self) -> LogMode:
+        return self.logger_cfg.get("mode", "SINGLE_THREAD")
+
+    def get_logger_level(self) -> int:
+        level_str = self.logger_cfg.get("level", "INFO").upper()
+        level_num = getattr(logging, level_str, logging.NOTSET)
+        if level_num == logging.NOTSET:
+            if level_str == NOTICE_LEVEL_NAME:
+                return NOTICE_LEVEL_NUM
+
+            return logging.INFO
+
+        return level_num
+
+    def get_logger_server_address(self) -> tuple[str, int]:
+        host = socket.gethostbyname(socket.gethostname())
+        port = logging.handlers.DEFAULT_TCP_LOGGING_PORT
+        return (host, port)
+
+    def get_handler_config(self) -> dict[str, Any]:
+        handlers_cfg = self.logger_cfg.get("handlers", {})
+        formatters_cfg = self.logger_cfg.get("formatters", {})
+        for handler in handlers_cfg.values():
+            fmt_name = handler.get("formatter")
+            if fmt_name and fmt_name in formatters_cfg:
+                fmt_str = formatters_cfg[fmt_name].get("format", "")
+                handler["formatter"] = logging.Formatter(fmt_str)
+        return handlers_cfg
 
 
 _server_logger: logging.Logger | None = None
@@ -46,19 +90,14 @@ def get_server_logger() -> logging.Logger:
 
     with _server_lock:
         if _server_logger is None:
+            config = LogConfig()
             _server_logger = logging.getLogger()
-            _server_logger.setLevel(logging.DEBUG)  # Receives logs of all levels
+            _server_logger.setLevel(config.get_logger_level())  # Receives logs of all levels
 
             for h in _server_logger.handlers[:]:
                 _server_logger.removeHandler(h)
 
-            handlers = LoggerManager._setup_common_handlers(
-                LogConfig.FORMATTER,
-                LogConfig.LOG_LEVEL,
-                LogConfig.LOG_FILE,
-                LogConfig.MAX_BYTES,
-                LogConfig.BACKUP_COUNT,
-            )
+            handlers = LoggerManager._setup_common_handlers()
             for h in handlers:
                 _server_logger.addHandler(h)
         return _server_logger
@@ -121,9 +160,11 @@ class LogRecordReceiver(ThreadingTCPServer):
         self.server_close()
 
 
-def run_log_server_process(host: str, port: int) -> None:
+def run_log_server_process() -> None:
     """Runs the log server in a separate process."""
     try:
+        config = LoggerManager._instance._config if LoggerManager._instance else LogConfig()
+        (host, port) = config.get_logger_server_address()
         get_server_logger()
         server = LogRecordReceiver(host=host, port=port)
         server.serve_until_stopped()
@@ -150,10 +191,8 @@ class LoggerManager:
     _listener: QueueListener | None = None
     _server_process: multiprocessing.Process | None = None
 
-    # B008 warning fix: Move LogConfig() call into function body
-    def __new__(cls, config: LogConfig | None = None) -> LoggerManager:
-        if config is None:
-            config = LogConfig()
+    def __new__(cls) -> LoggerManager:
+        config = LogConfig()
 
         if cls._instance is None:
             cls._instance = super().__new__(cls)
@@ -161,68 +200,66 @@ class LoggerManager:
         return cls._instance
 
     @staticmethod
-    def _setup_common_handlers(
-        formatter: logging.Formatter,
-        level: int,
-        log_file: str,
-        max_bytes: int,
-        backup_count: int,
-    ) -> list[logging.Handler]:
+    def _setup_common_handlers() -> list[logging.Handler]:
         """Sets up common StreamHandler and RotatingFileHandler"""
+        config = LoggerManager._instance._config if LoggerManager._instance else LogConfig()
+        handlers_cfg = config.get_handler_config()
+
         handlers = []
 
+        log_file = handlers_cfg["file"]["filename"]
         log_dir = os.path.dirname(log_file)
+        if os.path.exists(log_file) and os.path.isfile(log_file):
+            os.remove(log_file)
         if log_dir and not os.path.exists(log_dir):
             os.makedirs(log_dir)
 
         file_handler = RotatingFileHandler(
             filename=log_file,
-            maxBytes=max_bytes,
-            backupCount=backup_count,
+            maxBytes=handlers_cfg["file"]["maxBytes"],
+            backupCount=handlers_cfg["file"]["backupCount"],
             encoding="utf-8",
         )
-        file_handler.setLevel(level)
-        file_handler.setFormatter(formatter)
+        file_handler.setLevel(handlers_cfg["file"]["level"])
+        file_handler.setFormatter(handlers_cfg["file"]["formatter"])
         handlers.append(file_handler)
 
         stream_handler = logging.StreamHandler()
-        stream_handler.setLevel(level)
-        stream_handler.setFormatter(formatter)
+        stream_handler.setLevel(handlers_cfg["stream"]["level"])
+        stream_handler.setFormatter(handlers_cfg["stream"]["formatter"])
         handlers.append(stream_handler)
 
         return handlers
 
-    def __init__(self, config: LogConfig | None = None) -> None:
-        config = self._config
-
+    def __init__(self) -> None:
         if LoggerManager._is_initialized:
             return
+        config = self._config
 
-        if config.LOG_MODE == "SINGLE_THREAD":
+        # config_data = config.get_handler_config()
+
+        logger_mode = config.get_logger_mode()
+
+        if logger_mode == "SINGLE_THREAD":
             self._init_single_thread(config)
-        elif config.LOG_MODE == "MULTI_PROCESS":
+        elif logger_mode == "MULTI_PROCESS":
             self._init_multi_process(config)
-        elif config.LOG_MODE == "DISTRIBUTED":
+        elif logger_mode == "DISTRIBUTED":
             self._init_distributed(config)
         else:
-            raise ValueError(f"Unknown log mode: {config.LOG_MODE}")
+            raise ValueError(f"Unknown log mode: {logger_mode}")
 
         LoggerManager._is_initialized = True
 
     def _init_single_thread(self, config: LogConfig) -> None:
         """Single-thread/single-process local logging"""
         logger = logging.getLogger()
-        logger.setLevel(config.LOG_LEVEL)
+        logger_level = config.get_logger_level()
+        logger.setLevel(logger_level)
 
         for h in logger.handlers[:]:
             logger.removeHandler(h)
-        handlers = self._setup_common_handlers(
-            config.FORMATTER,
-            config.LOG_LEVEL,
-            config.LOG_FILE,
-            config.MAX_BYTES,
-            config.BACKUP_COUNT,
-        )
+        handlers = self._setup_common_handlers()
 
         for h in handlers:
             logger.addHandler(h)
@@ -232,30 +269,20 @@ class LoggerManager:
         if self._log_queue is None:
             self._log_queue = multiprocessing.Queue(-1)  # Shared queue
 
-        # Only start QueueListener in the Main Process (Root Logger receives)
-        # Only handlers processed by QueueListener need formatter
         if multiprocessing.current_process().name == "MainProcess":
-            handlers = self._setup_common_handlers(
-                config.FORMATTER,
-                config.LOG_LEVEL,
-                config.LOG_FILE,
-                config.MAX_BYTES,
-                config.BACKUP_COUNT,
-            )
+            handlers = self._setup_common_handlers()
 
-            self._listener = QueueListener(self._log_queue, *handlers)
+            self._listener = QueueListener(self._log_queue, *handlers, respect_handler_level=True)
             self._listener.start()
 
     def _init_distributed(self, config: LogConfig) -> None:
         """Distributed logging (using SocketHandler)"""
 
         if multiprocessing.current_process().name == "MainProcess":
+            # (server_host, server_port) = config.get_logger_server_address()
             self._server_process = multiprocessing.Process(
                 target=run_log_server_process,
-                args=(
-                    config.SERVER_HOST,
-                    config.SERVER_PORT,
-                ),
+                args=(),
                 daemon=True,
             )
             self._server_process.start()
@@ -277,12 +304,13 @@ class LoggerManager:
     @staticmethod
     def setup_worker_logger(
         log_queue: multiprocessing.Queue[Any] | None = None,
-        log_mode: LogMode = "SINGLE_THREAD",
-        log_level: int = logging.DEBUG,
-        server_host: str = LogConfig.SERVER_HOST,
-        server_port: int = LogConfig.SERVER_PORT,
     ) -> None:
         """Sets up logging for worker processes (specific to multi-process modes)"""
+
+        config = LoggerManager._instance._config if LoggerManager._instance else LogConfig()
+        log_mode = config.get_logger_mode()
+        log_level = config.get_logger_level()
+        (server_host, server_port) = config.get_logger_server_address()
 
         logger = logging.getLogger()
         logger.setLevel(log_level)
@@ -327,6 +355,9 @@ class LoggerManager:
     def info(self, msg: str, *args: object, **kwargs: Any) -> None:  # noqa: ANN401
         self.logger.info(msg, *args, **kwargs)
 
+    def notice(self, msg: str, *args: object, **kwargs: Any) -> None:  # noqa: ANN401
+        self.logger.notice(msg, *args, **kwargs)
+
     def warning(self, msg: str, *args: object, **kwargs: Any) -> None:  # noqa: ANN401
         self.logger.warning(msg, *args, **kwargs)
 
@@ -340,21 +371,17 @@ class LoggerManager:
 def worker_task(
     name: str | int,
     log_queue: multiprocessing.Queue[Any] | None = None,
-    log_mode: LogMode = "SINGLE_THREAD",
-    log_level: int = logging.DEBUG,
-    server_host: str = LogConfig.SERVER_HOST,
-    server_port: int = LogConfig.SERVER_PORT,
 ) -> None:
     """Simulates a worker thread/process task"""
 
     # Set up the logging sending mechanism for the worker process (using the passed log_mode)
     # root logger in each process need to add the handler for transmission
+    config = LoggerManager._instance._config if LoggerManager._instance else LogConfig()
+    log_mode = config.get_logger_mode()
     if log_mode in ("MULTI_PROCESS", "DISTRIBUTED"):
-        LoggerManager.setup_worker_logger(log_queue, log_mode, log_level, server_host, server_port)
+        LoggerManager.setup_worker_logger(log_queue)
 
-    logger = logging.getLogger(str(name))
-    logger.propagate = True
-    logger.setLevel(log_level)
+    logger = get_module_logger(f"worker_{name}")
 
     logger.info(f"Worker {name} start. PID: {os.getpid()}")
     for i in range(3):
@@ -370,14 +397,15 @@ def worker_task(
 
 def run_single_thread_test() -> None:
     # Static configuration must be set first for LoggerManager's internal use
-    LogConfig.LOG_MODE = "SINGLE_THREAD"
+    # LogConfig.LOG_MODE = "SINGLE_THREAD"
 
     LoggerManager()
     logger = logging.getLogger(__name__)
     logger.info("--- Starting Single-Thread Test ---")
+    # logger.notice("--- Test NOTICE level message ---")
 
     # Pass configuration to worker_task
-    worker_task("MainThread", log_mode=LogConfig.LOG_MODE, log_level=LogConfig.LOG_LEVEL)
+    worker_task("MainThread")
     logger.error("Single thread test complete.")
     LoggerManager.shutdown()
 
@@ -385,26 +413,21 @@ def run_single_thread_test() -> None:
 def run_multi_process_test() -> None:
     # Ensure cross-platform compatibility
     multiprocessing.set_start_method("spawn", force=True)
-    LogConfig.LOG_MODE = "MULTI_PROCESS"
 
     LoggerManager()
-    logger = logging.getLogger(__name__)
     log_queue = LoggerManager.get_log_queue()
-    LoggerManager.setup_worker_logger(log_queue, LogConfig.LOG_MODE, LogConfig.LOG_LEVEL)
+    LoggerManager.setup_worker_logger(log_queue)
+    logger = get_module_logger(__name__)
 
     logger.info("--- Starting Multi-Process Test ---")
-
-    worker_args = (
-        LogConfig.LOG_MODE,
-        LogConfig.LOG_LEVEL,
-        LogConfig.SERVER_HOST,
-        LogConfig.SERVER_PORT,
-    )
 
     procs = [
         multiprocessing.Process(
             target=worker_task,
-            args=(i, log_queue, *worker_args),  # Pass i, log_queue, log_mode, log_level, host, port
+            args=(
+                i,
+                log_queue,
+            ),
         )
         for i in range(3)
     ]
@@ -426,27 +449,18 @@ def distributed_pool_worker_wrapper(name: int) -> None:
     return worker_task(
         name=name,
         log_queue=None,  # Pool does not use Queue
-        log_mode="DISTRIBUTED",
-        log_level=LogConfig.LOG_LEVEL,
-        server_host=LogConfig.SERVER_HOST,
-        server_port=LogConfig.SERVER_PORT,
     )
 
 
 def run_distributed_test() -> None:
     multiprocessing.set_start_method("spawn", force=True)
-    LogConfig.LOG_MODE = "DISTRIBUTED"
 
     # Main controller program starts the log server
     LoggerManager()
-    logger = logging.getLogger(__name__)
     LoggerManager.setup_worker_logger(
         log_queue=None,
-        log_mode=LogConfig.LOG_MODE,
-        log_level=LogConfig.LOG_LEVEL,
-        server_host=LogConfig.SERVER_HOST,
-        server_port=LogConfig.SERVER_PORT,
     )
+    logger = get_module_logger(__name__)
 
     logger.info("--- Starting Distributed Test ---")
 

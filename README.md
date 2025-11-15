@@ -36,7 +36,7 @@ Uses TCP Sockets to transmit log records to an independently running log server 
 
 * **Mechanism:**
     * **Client (Worker):** The `Root Logger` mounts a `SocketHandler`, serializing and sending logs over the network.
-    * **Server (Log Server Process):** An independent process runs the `LogRecordReceiver` (a TCP server) which receives the logs and passes them to a dedicated `_server_logger` for writing.
+    * **Server (Log Server Process):** An independent process runs the `LogRecordReceiver` (a TCP server) which receives the logs and passes them to a root logger for writing.
 * **Advantage:** Centralized log management, suitable for multi-machine, multi-service distributed deployments.
 
 ---
